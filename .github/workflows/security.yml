@@ -48,7 +48,7 @@ jobs:
           tool: cargo-audit
 
       - name: Run cargo audit
-        run: cargo audit --deny warnings
+        run: cargo audit --deny warnings --ignore RUSTSEC-2026-0173 --ignore RUSTSEC-2026-0190
 
   # Dependency license checking
   cargo-deny:

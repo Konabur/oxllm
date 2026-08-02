@@ -52,6 +52,7 @@ pub struct AppState {
     pub virtual_models: HashMap<String, Vec<VirtualModelTarget>>,
     pub http_client: reqwest::Client,
     pub upstream_timeout_secs: u64,
+    pub api_key: String,
 }
 
 impl AppState {

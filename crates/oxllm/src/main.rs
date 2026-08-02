@@ -1,26 +1,32 @@
 use clap::{Parser, Subcommand};
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-use axum::{
-    body::Body,
-    extract::ConnectInfo,
-    http::{header, HeaderValue, Request, StatusCode},
-    middleware::{self, Next},
-    response::{IntoResponse, Response},
-};
+#[cfg(test)]
+use axum::middleware;
+#[cfg(test)]
+use oxllm::{add_request_id, routes, ReloadableState, Reloader};
+#[cfg(test)]
+use oxllm_core::state::{AppState, CircuitState, ProviderState};
+#[cfg(test)]
+use oxllm_core::telemetry::TelemetryClient;
+#[cfg(test)]
+use reqwest::Url;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, AtomicU64};
+#[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
+use std::time::{Duration, Instant};
+#[cfg(test)]
+use tokio::sync::RwLock;
+#[cfg(test)]
 use tower_http::cors::{Any, CorsLayer};
 
+use oxllm::{build_reloadable_state, build_router, handle_sighup, ConfigSource};
 use oxllm_core::config::Config;
-use oxllm_core::state::{AppState, CircuitState, ProviderState};
-use oxllm_core::telemetry::{TelemetryClient, TelemetryWorker};
-use reqwest::Url;
 
 /// Resolves the config file path using XDG base directory conventions.
 ///
@@ -47,8 +53,6 @@ fn resolve_config_path(given: PathBuf) -> PathBuf {
     }
     given // fall back to original path (will produce a clear file-not-found error)
 }
-
-mod routes;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -139,94 +143,6 @@ enum ProviderCommand {
     },
 }
 
-#[derive(Clone)]
-pub struct Reloader {
-    sender: tokio::sync::watch::Sender<Arc<AppState>>,
-    config_path: PathBuf,
-}
-
-#[derive(Clone)]
-pub struct ReloadableState {
-    pub app_state: tokio::sync::watch::Receiver<Arc<AppState>>,
-    pub telemetry: TelemetryClient,
-    pub start_time: Instant,
-    pub reloader: Reloader,
-}
-
-impl axum::extract::FromRef<ReloadableState> for Arc<AppState> {
-    fn from_ref(state: &ReloadableState) -> Self {
-        state.app_state.borrow().clone()
-    }
-}
-
-impl axum::extract::FromRef<ReloadableState> for (Arc<AppState>, TelemetryClient) {
-    fn from_ref(state: &ReloadableState) -> Self {
-        (state.app_state.borrow().clone(), state.telemetry.clone())
-    }
-}
-
-impl axum::extract::FromRef<ReloadableState> for Instant {
-    fn from_ref(state: &ReloadableState) -> Self {
-        state.start_time
-    }
-}
-
-impl axum::extract::FromRef<ReloadableState> for (Arc<AppState>, Instant) {
-    fn from_ref(state: &ReloadableState) -> Self {
-        (state.app_state.borrow().clone(), state.start_time)
-    }
-}
-
-impl axum::extract::FromRef<ReloadableState> for Reloader {
-    fn from_ref(state: &ReloadableState) -> Self {
-        state.reloader.clone()
-    }
-}
-
-fn build_app_state(config: Config) -> Result<AppState, String> {
-    let mut providers = Vec::new();
-    for p in config.providers {
-        if !p.enabled {
-            continue;
-        }
-        let url = Url::parse(&p.base_url).map_err(|e| {
-            format!(
-                "Invalid base URL '{}' for provider '{}': {}",
-                p.base_url, p.name, e
-            )
-        })?;
-
-        providers.push(ProviderState {
-            name: p.name,
-            base_url: url,
-            api_key: p.api_key,
-            models: p.models,
-            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
-            consecutive_failures: Arc::new(RwLock::new(0)),
-            rate_limited_until: Arc::new(RwLock::new(None)),
-            last_attempt_time: Arc::new(RwLock::new(None)),
-            probe_in_flight: Arc::new(AtomicBool::new(false)),
-            manual_disabled: AtomicBool::new(false),
-            requests: AtomicU64::new(0),
-            successes: AtomicU64::new(0),
-            tokens_input: AtomicU64::new(0),
-            tokens_output: AtomicU64::new(0),
-        });
-    }
-
-    let http_client = reqwest::Client::builder()
-        .pool_idle_timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
-
-    Ok(AppState {
-        providers,
-        virtual_models: config.virtual_models,
-        http_client,
-        upstream_timeout_secs: config.server.upstream_timeout_secs,
-    })
-}
-
 fn write_pid_file() -> std::io::Result<()> {
     let pid = std::process::id();
     std::fs::write("/tmp/oxllm.pid", pid.to_string())
@@ -244,69 +160,6 @@ fn send_sighup(pid: u32) -> std::io::Result<()> {
             status.code()
         )))
     }
-}
-
-/// Generates a random request ID for response correlation.
-fn generate_request_id() -> String {
-    format!("oxllm-{:016x}", rand::random::<u64>())
-}
-
-/// Middleware that adds an `x-request-id` header to every response.
-/// Generates the ID before calling the handler, stores it in request
-/// extensions so route handlers can read the same ID for logs/telemetry,
-/// and inserts it into the response header (without overriding an existing
-/// `x-request-id` forwarded from upstream).
-async fn add_request_id(mut req: Request<Body>, next: Next) -> Response {
-    let request_id = generate_request_id();
-    req.extensions_mut().insert(request_id.clone());
-    let mut response = next.run(req).await;
-    if !response.headers().contains_key("x-request-id") {
-        // SAFETY: generate_request_id produces only ASCII hex chars and "oxllm-" prefix.
-        response.headers_mut().insert(
-            "x-request-id",
-            HeaderValue::from_str(&request_id)
-                .expect("generated request ID contains invalid characters"),
-        );
-    }
-    response
-}
-
-async fn localhost_only(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    req: Request<Body>,
-    next: Next,
-) -> Result<Response, Response> {
-    let is_local = match addr.ip() {
-        IpAddr::V4(v4) => v4.is_loopback(),
-        // Dual-stack bindings present IPv4 connections as IPv4-mapped IPv6
-        // addresses like ::ffff:127.0.0.1. to_canonical() converts these to
-        // their IPv4 representation so is_loopback() works correctly.
-        IpAddr::V6(v6) => v6.is_loopback() || v6.to_canonical().is_loopback(),
-    };
-    if is_local {
-        Ok(next.run(req).await)
-    } else {
-        warn!(target: "oxllm::security", "Blocked external attempt to access administrative route from IP: {}", addr.ip());
-        let body = serde_json::json!({
-            "error": {
-                "message": "Access denied: administrative routes are localhost-only",
-                "type": "forbidden",
-                "code": 403
-            }
-        });
-        let bytes = serde_json::to_vec(&body).unwrap();
-        let mut response = Response::new(Body::from(bytes));
-        *response.status_mut() = StatusCode::FORBIDDEN;
-        response.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
-        Err(response)
-    }
-}
-
-async fn health_check() -> impl IntoResponse {
-    (StatusCode::OK, "OK")
 }
 
 async fn shutdown_signal() {
@@ -340,230 +193,25 @@ async fn shutdown_signal() {
     let _ = std::fs::remove_file("/tmp/oxllm.pid");
 }
 
-async fn handle_http_reload(
-    axum::extract::State(reloader): axum::extract::State<Reloader>,
-) -> impl IntoResponse {
-    let config = match Config::load_from_file(&reloader.config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            let body = serde_json::json!({
-                "error": {
-                    "message": format!("Failed to load config: {}", e),
-                    "type": "invalid_request_error",
-                    "code": 400
-                }
-            });
-            let bytes = serde_json::to_vec(&body).unwrap();
-            let mut response = Response::new(Body::from(bytes));
-            *response.status_mut() = StatusCode::BAD_REQUEST;
-            response.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            );
-            return response;
-        },
-    };
-    if let Err(e) = config.validate() {
-        let body = serde_json::json!({
-            "error": {
-                "message": format!("Config validation failed: {}", e),
-                "type": "invalid_request_error",
-                "code": 400
-            }
-        });
-        let bytes = serde_json::to_vec(&body).unwrap();
-        let mut response = Response::new(Body::from(bytes));
-        *response.status_mut() = StatusCode::BAD_REQUEST;
-        response.headers_mut().insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
-        return response;
-    }
-    match build_app_state(config) {
-        Ok(new_state) => {
-            if reloader.sender.send(Arc::new(new_state)).is_ok() {
-                info!("Configuration reloaded via HTTP POST /reload");
-                let body = serde_json::json!({
-                    "message": "Configuration reloaded successfully"
-                });
-                let bytes = serde_json::to_vec(&body).unwrap();
-                let mut response = Response::new(Body::from(bytes));
-                *response.status_mut() = StatusCode::OK;
-                response.headers_mut().insert(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static("application/json"),
-                );
-                response
-            } else {
-                let body = serde_json::json!({
-                    "error": {
-                        "message": "Failed to send config update",
-                        "type": "internal_error",
-                        "code": 500
-                    }
-                });
-                let bytes = serde_json::to_vec(&body).unwrap();
-                let mut response = Response::new(Body::from(bytes));
-                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                response.headers_mut().insert(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static("application/json"),
-                );
-                response
-            }
-        },
-        Err(e) => {
-            let body = serde_json::json!({
-                "error": {
-                    "message": format!("Failed to build state: {}", e),
-                    "type": "invalid_request_error",
-                    "code": 400
-                }
-            });
-            let bytes = serde_json::to_vec(&body).unwrap();
-            let mut response = Response::new(Body::from(bytes));
-            *response.status_mut() = StatusCode::BAD_REQUEST;
-            response.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            );
-            response
-        },
-    }
-}
-
-async fn handle_sighup(
-    config_path: PathBuf,
-    watch_sender: tokio::sync::watch::Sender<Arc<AppState>>,
-) {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut sig = match signal(SignalKind::hangup()) {
-            Ok(s) => s,
-            Err(e) => {
-                error!("Failed to register SIGHUP handler: {}", e);
-                return;
-            },
-        };
-
-        info!("Registered SIGHUP reload listener");
-        while sig.recv().await.is_some() {
-            info!("SIGHUP received, reloading configuration...");
-            match Config::load_from_file(&config_path) {
-                Ok(new_config) => {
-                    if let Err(e) = new_config.validate() {
-                        error!("Configuration validation failed during hot-reload: {}", e);
-                        continue;
-                    }
-                    match build_app_state(new_config) {
-                        Ok(new_state) => {
-                            if let Err(e) = watch_sender.send(Arc::new(new_state)) {
-                                error!("Failed to update watch channel: {}", e);
-                            } else {
-                                info!("Configuration successfully reloaded!");
-                            }
-                        },
-                        Err(e) => {
-                            error!("Failed to build new app state during hot-reload: {}", e);
-                        },
-                    }
-                },
-                Err(e) => {
-                    error!("Failed to load config file during hot-reload: {}", e);
-                },
-            }
-        }
-    }
-}
-
 async fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = resolve_config_path(config_path);
-    // 1. Load initial config
     let config = Config::load_from_file(&config_path)?;
     config.validate()?;
 
-    // 2. Build initial AppState
-    let app_state = Arc::new(build_app_state(config.clone())?);
+    let source = ConfigSource::File(config_path.clone());
+    let state = build_reloadable_state(config.clone(), source)?;
 
-    // 3. Initialize watch channel
-    let (watch_sender, watch_receiver) = tokio::sync::watch::channel(app_state.clone());
+    // Spawn SIGHUP listener using the reloader from state
+    let reloader = state.reloader.clone();
+    tokio::spawn(handle_sighup(reloader));
 
-    // 4. Initialize telemetry channel & spawn TelemetryWorker
-    let (telemetry_tx, telemetry_rx) = tokio::sync::mpsc::channel(1024);
-    let telemetry_client = TelemetryClient::new(telemetry_tx);
-    let otel_endpoint = config.server.otel_endpoint.clone();
-    let _worker_handle = TelemetryWorker::spawn(&otel_endpoint, telemetry_rx)?;
-
-    // 5. Spawn SIGHUP listener
-    let config_path_clone = config_path.clone();
-    tokio::spawn(handle_sighup(config_path_clone, watch_sender.clone()));
-
-    // 6. Build Axum Router
-    let start_time = Instant::now();
-    let reloader = Reloader {
-        sender: watch_sender.clone(),
-        config_path: config_path.clone(),
-    };
-    let reloadable_state = ReloadableState {
-        app_state: watch_receiver,
-        telemetry: telemetry_client,
-        start_time,
-        reloader,
-    };
-
-    use axum::routing::{get, post};
-    let app = axum::Router::new()
-        .route("/v1/models", get(routes::list_models))
-        .route("/v1/embeddings", post(routes::create_embeddings))
-        .route(
-            "/v1/chat/completions",
-            post(routes::create_chat_completions),
-        )
-        .route(
-            "/status",
-            get(routes::get_status).layer(middleware::from_fn(localhost_only)),
-        )
-        .route(
-            "/health",
-            get(health_check).layer(middleware::from_fn(localhost_only)),
-        )
-        .route(
-            "/reload",
-            post(handle_http_reload).layer(middleware::from_fn(localhost_only)),
-        )
-        .route(
-            "/admin/providers/{name}/offline",
-            post(routes::admin_offline).layer(middleware::from_fn(localhost_only)),
-        )
-        .route(
-            "/admin/providers/{name}/online",
-            post(routes::admin_online).layer(middleware::from_fn(localhost_only)),
-        )
-        .route(
-            "/admin/providers/{name}/reset",
-            post(routes::admin_reset).layer(middleware::from_fn(localhost_only)),
-        )
-        .layer(middleware::from_fn(add_request_id))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods([
-                    axum::http::Method::GET,
-                    axum::http::Method::POST,
-                    axum::http::Method::OPTIONS,
-                ])
-                .allow_headers(Any),
-        )
-        .with_state(reloadable_state);
+    let app = build_router(state);
 
     // Write PID file
     if let Err(e) = write_pid_file() {
         warn!("Failed to write PID file: {}", e);
     }
 
-    // Start listening
     let port = config.server.port;
     let listener = match config.server.bind_family.as_str() {
         "ipv6" => {
@@ -602,7 +250,6 @@ async fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error
                 .map_err(|e| format!("Failed to create tokio listener: {}", e))?
         },
         _ => {
-            // Default: IPv4
             let addr = format!("{}:{}", config.server.host, port);
             info!("Listening on http://{} (IPv4)", addr);
             tokio::net::TcpListener::bind(&addr).await?
@@ -1080,6 +727,7 @@ mod integration_tests {
             virtual_models,
             http_client,
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
 
         let (_watch_sender, watch_receiver) = tokio::sync::watch::channel(app_state.clone());
@@ -1088,7 +736,7 @@ mod integration_tests {
 
         let dummy_reloader = Reloader {
             sender: _watch_sender.clone(),
-            config_path: PathBuf::from("config.toml"),
+            source: ConfigSource::File(PathBuf::from("config.toml")),
         };
 
         let reloadable_state = ReloadableState {
@@ -1174,6 +822,7 @@ mod integration_tests {
             virtual_models,
             http_client,
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
 
         let (_watch_sender, watch_receiver) = tokio::sync::watch::channel(app_state.clone());
@@ -1182,7 +831,7 @@ mod integration_tests {
 
         let dummy_reloader = Reloader {
             sender: _watch_sender.clone(),
-            config_path: PathBuf::from("config.toml"),
+            source: ConfigSource::File(PathBuf::from("config.toml")),
         };
 
         let reloadable_state = ReloadableState {
@@ -1357,6 +1006,7 @@ mod integration_tests {
             virtual_models,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -1367,7 +1017,7 @@ mod integration_tests {
             start_time: Instant::now(),
             reloader: Reloader {
                 sender: _ws,
-                config_path: PathBuf::from("."),
+                source: ConfigSource::File(PathBuf::from(".")),
             },
         };
         let router = axum::Router::new()
@@ -1485,6 +1135,7 @@ mod integration_tests {
             virtual_models,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -1495,7 +1146,7 @@ mod integration_tests {
             start_time: Instant::now(),
             reloader: Reloader {
                 sender: _ws,
-                config_path: PathBuf::from("."),
+                source: ConfigSource::File(PathBuf::from(".")),
             },
         };
         let router = axum::Router::new()
@@ -1580,6 +1231,7 @@ mod integration_tests {
             virtual_models,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -1590,7 +1242,7 @@ mod integration_tests {
             start_time: Instant::now(),
             reloader: Reloader {
                 sender: _ws,
-                config_path: PathBuf::from("."),
+                source: ConfigSource::File(PathBuf::from(".")),
             },
         };
 
@@ -1697,6 +1349,7 @@ mod integration_tests {
             virtual_models,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -1707,7 +1360,7 @@ mod integration_tests {
             start_time: Instant::now(),
             reloader: Reloader {
                 sender: _ws,
-                config_path: PathBuf::from("."),
+                source: ConfigSource::File(PathBuf::from(".")),
             },
         };
         let router = axum::Router::new()
@@ -1787,6 +1440,7 @@ mod integration_tests {
             virtual_models: vm,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
         let (_ws, wr) = tokio::sync::watch::channel(state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
@@ -1796,7 +1450,7 @@ mod integration_tests {
             start_time: Instant::now(),
             reloader: Reloader {
                 sender: _ws,
-                config_path: PathBuf::from("."),
+                source: ConfigSource::File(PathBuf::from(".")),
             },
         };
         let router = axum::Router::new()
@@ -1868,6 +1522,7 @@ mod integration_tests {
             virtual_models: vms,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
         let (_ws, wr) = tokio::sync::watch::channel(state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
@@ -1877,7 +1532,7 @@ mod integration_tests {
             start_time: Instant::now(),
             reloader: Reloader {
                 sender: _ws.clone(),
-                config_path: PathBuf::from("."),
+                source: ConfigSource::File(PathBuf::from(".")),
             },
         };
         let router = axum::Router::new()
@@ -1962,6 +1617,7 @@ mod integration_tests {
             virtual_models: vms,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
         let (_ws, wr) = tokio::sync::watch::channel(state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
@@ -1971,7 +1627,7 @@ mod integration_tests {
             start_time: Instant::now(),
             reloader: Reloader {
                 sender: _ws,
-                config_path: PathBuf::from("."),
+                source: ConfigSource::File(PathBuf::from(".")),
             },
         };
         let router = axum::Router::new()
@@ -2056,6 +1712,7 @@ mod integration_tests {
             virtual_models: vm,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
@@ -2065,7 +1722,7 @@ mod integration_tests {
             start_time: Instant::now(),
             reloader: Reloader {
                 sender: _ws,
-                config_path: PathBuf::from("."),
+                source: ConfigSource::File(PathBuf::from(".")),
             },
         };
         (app_state, rs)

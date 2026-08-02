@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Deploy oxllm-shuttle to Shuttle
-        uses: shuttle-hq/deploy-action@v2
+        uses: shuttle-hq/deploy-action@e1c2ff9b0d68adb0b2cfb35e29edfb335b854e41
         with:
           shuttle-api-key: ${{ secrets.SHUTTLE_API_KEY }}
           project-id: ${{ vars.SHUTTLE_PROJECT_ID }}

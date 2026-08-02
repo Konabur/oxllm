@@ -43,7 +43,7 @@ jobs:
     outputs:
       new_version: ${{ steps.bump.outputs.new }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -84,7 +84,7 @@ jobs:
           echo "old=$current" >> "$GITHUB_OUTPUT"
           echo "new=$new" >> "$GITHUB_OUTPUT"
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@8439c15d249cd2e2a5c80ad3da200c3d8553ae4
         if: steps.preflight.outputs.skip != 'true'
         with:
           toolchain: stable

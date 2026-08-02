@@ -29,10 +29,10 @@ jobs:
     name: oxllm-core
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@8439c15d249cd2e2a5c80ad3da200c3d8553ae4
         with:
           toolchain: stable
       - name: Publish oxllm-core (idempotent)
@@ -52,10 +52,10 @@ jobs:
     needs: publish-core
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.ref || github.ref }}
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@8439c15d249cd2e2a5c80ad3da200c3d8553ae4
         with:
           toolchain: stable
       - name: Wait for crates.io index

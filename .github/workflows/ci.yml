@@ -23,10 +23,10 @@ jobs:
     name: Format Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@8439c15d249cd2e2a5c80ad3da200c3d8553ae4
         with:
           toolchain: stable
           components: rustfmt
@@ -38,10 +38,10 @@ jobs:
     name: Lint (Clippy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@8439c15d249cd2e2a5c80ad3da200c3d8553ae4
         with:
           toolchain: stable
           components: clippy
@@ -59,15 +59,15 @@ jobs:
         rust: [stable]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@8439c15d249cd2e2a5c80ad3da200c3d8553ae4
         with:
           toolchain: ${{ matrix.rust }}
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60
         with:
           tool: cargo-nextest
 
@@ -89,16 +89,16 @@ jobs:
     outputs:
       workspace_coverage: ${{ steps.coverage.outputs.workspace }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@8439c15d249cd2e2a5c80ad3da200c3d8553ae4
         with:
           toolchain: stable
           components: llvm-tools-preview
 
       - name: Install coverage tooling
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60
         with:
           tool: cargo-llvm-cov
 
@@ -117,7 +117,7 @@ jobs:
           COVERAGE_THRESHOLD_OXLLM_CORE: ${{ env.COVERAGE_THRESHOLD_OXLLM_CORE }}
 
       - name: Upload coverage JSON artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: coverage-summary
           path: coverage.json
@@ -126,13 +126,13 @@ jobs:
         run: cargo llvm-cov --workspace --all-features --html
 
       - name: Store coverage trend artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: coverage-html-report
           path: target/llvm-cov/html
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
         with:
           files: lcov.info
           fail_ci_if_error: false
@@ -142,7 +142,7 @@ jobs:
 
       - name: Comment coverage summary on PR
         if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@3d7b8546315c63df45a03981d50a43ec19237f80
         with:
           header: coverage-report
           message: |
@@ -158,15 +158,15 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@8439c15d249cd2e2a5c80ad3da200c3d8553ae4
         with:
           toolchain: stable
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60
         with:
           tool: cargo-audit
 
@@ -177,15 +177,15 @@ jobs:
     name: Dependency Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@8439c15d249cd2e2a5c80ad3da200c3d8553ae4
         with:
           toolchain: stable
 
       - name: Install cargo-outdated
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60
         with:
           tool: cargo-outdated
 
@@ -196,10 +196,10 @@ jobs:
     name: Documentation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@8439c15d249cd2e2a5c80ad3da200c3d8553ae4
         with:
           toolchain: stable
 

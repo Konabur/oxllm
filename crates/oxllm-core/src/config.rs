@@ -69,9 +69,7 @@ impl Config {
             return Ok(config);
         }
         let path = std::env::var("OXLLM_CONFIG").map_err(|_| {
-            OxllmError::ConfigLoad(
-                "Neither OXLLM_CONFIG_TOML nor OXLLM_CONFIG is set".into(),
-            )
+            OxllmError::ConfigLoad("Neither OXLLM_CONFIG_TOML nor OXLLM_CONFIG is set".into())
         })?;
         Self::load_from_file(&path)
     }

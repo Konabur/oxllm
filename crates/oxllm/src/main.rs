@@ -5,6 +5,16 @@ use tracing::{info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[cfg(test)]
+use axum::middleware;
+#[cfg(test)]
+use oxllm::{add_request_id, routes, ReloadableState, Reloader};
+#[cfg(test)]
+use oxllm_core::state::{AppState, CircuitState, ProviderState};
+#[cfg(test)]
+use oxllm_core::telemetry::TelemetryClient;
+#[cfg(test)]
+use reqwest::Url;
+#[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicU64};
 #[cfg(test)]
 use std::sync::Arc;
@@ -13,19 +23,7 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 use tokio::sync::RwLock;
 #[cfg(test)]
-use axum::middleware;
-#[cfg(test)]
 use tower_http::cors::{Any, CorsLayer};
-#[cfg(test)]
-use oxllm::{
-    add_request_id, routes, ReloadableState, Reloader,
-};
-#[cfg(test)]
-use oxllm_core::state::{AppState, CircuitState, ProviderState};
-#[cfg(test)]
-use oxllm_core::telemetry::TelemetryClient;
-#[cfg(test)]
-use reqwest::Url;
 
 use oxllm::{build_reloadable_state, build_router, handle_sighup, ConfigSource};
 use oxllm_core::config::Config;

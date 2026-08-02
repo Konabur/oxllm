@@ -40,9 +40,7 @@ pub enum ConfigSource {
 impl ConfigSource {
     fn load(&self) -> Result<Config, String> {
         match self {
-            ConfigSource::File(path) => {
-                Config::load_from_file(path).map_err(|e| e.to_string())
-            },
+            ConfigSource::File(path) => Config::load_from_file(path).map_err(|e| e.to_string()),
             ConfigSource::Env => Config::from_env().map_err(|e| e.to_string()),
         }
     }
@@ -126,9 +124,7 @@ pub fn build_app_state(config: Config) -> Result<AppState, OxllmError> {
     let http_client = reqwest::Client::builder()
         .pool_idle_timeout(Duration::from_secs(90))
         .build()
-        .map_err(|e| {
-            OxllmError::ConfigLoad(format!("Failed to build HTTP client: {}", e))
-        })?;
+        .map_err(|e| OxllmError::ConfigLoad(format!("Failed to build HTTP client: {}", e)))?;
 
     Ok(AppState {
         providers,
@@ -436,15 +432,24 @@ pub fn build_router(state: ReloadableState) -> Router {
     let auth_layer = middleware::from_fn_with_state(state.clone(), auth_or_localhost);
 
     axum::Router::new()
-        .route("/v1/models", get(routes::list_models).layer(auth_layer.clone()))
-        .route("/v1/embeddings", post(routes::create_embeddings).layer(auth_layer.clone()))
+        .route(
+            "/v1/models",
+            get(routes::list_models).layer(auth_layer.clone()),
+        )
+        .route(
+            "/v1/embeddings",
+            post(routes::create_embeddings).layer(auth_layer.clone()),
+        )
         .route(
             "/v1/chat/completions",
             post(routes::create_chat_completions).layer(auth_layer.clone()),
         )
         .route("/status", get(routes::get_status).layer(auth_layer.clone()))
         .route("/health", get(health_check).layer(auth_layer.clone()))
-        .route("/reload", post(handle_http_reload).layer(auth_layer.clone()))
+        .route(
+            "/reload",
+            post(handle_http_reload).layer(auth_layer.clone()),
+        )
         .route(
             "/admin/providers/{name}/offline",
             post(routes::admin_offline).layer(auth_layer.clone()),
@@ -497,9 +502,12 @@ mod auth_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-                .await
-                .unwrap();
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
         });
 
         let client = reqwest::Client::new();

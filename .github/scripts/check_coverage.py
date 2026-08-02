@@ -18,17 +18,34 @@ def _load_thresholds() -> dict[str, float]:
     return thresholds
 
 
-def _line_percent(lines: dict) -> float:
-    count = lines.get("count", 0)
-    covered = lines.get("covered", 0)
-    if count == 0:
-        return 100.0
-    return covered / count * 100.0
+# Deploy-only crates without a meaningful test surface are excluded from the
+# coverage computation so they don't drag down workspace coverage.
+EXCLUDED_CRATES = {"oxllm-shuttle"}
+
+
+def _crate_name(filename: str) -> str | None:
+    """Extract the crate directory name from a file path (segment after 'crates/')."""
+    parts = filename.replace("\\", "/").split("/")
+    try:
+        idx = parts.index("crates")
+        return parts[idx + 1]
+    except (ValueError, IndexError):
+        return None
 
 
 def _workspace_percent(data: dict) -> float:
-    totals = data["data"][0]["totals"]["lines"]
-    return _line_percent(totals)
+    covered = 0
+    count = 0
+    for file_entry in data["data"][0].get("files", []):
+        filename: str = file_entry.get("filename", "")
+        if _crate_name(filename) in EXCLUDED_CRATES:
+            continue
+        lines = file_entry.get("summary", {}).get("lines", {})
+        covered += lines.get("covered", 0)
+        count += lines.get("count", 0)
+    if count == 0:
+        return 100.0
+    return covered / count * 100.0
 
 
 def _crate_percentages(data: dict) -> dict[str, float]:
@@ -41,12 +58,8 @@ def _crate_percentages(data: dict) -> dict[str, float]:
 
     for file_entry in data["data"][0].get("files", []):
         filename: str = file_entry.get("filename", "")
-        # Match paths like .../crates/oxllm-core/src/lib.rs
-        parts = filename.replace("\\", "/").split("/")
-        try:
-            idx = parts.index("crates")
-            crate_name = parts[idx + 1]
-        except (ValueError, IndexError):
+        crate_name = _crate_name(filename)
+        if crate_name is None or crate_name in EXCLUDED_CRATES:
             continue
 
         lines = file_entry.get("summary", {}).get("lines", {})

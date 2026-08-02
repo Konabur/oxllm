@@ -1,0 +1,19 @@
+[package]
+name = "oxllm-shuttle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shuttle deployment entry point for oxllm"
+
+[dependencies]
+oxllm = { path = "../oxllm" }
+oxllm-core = { path = "../oxllm-core" }
+shuttle-runtime = "0.57"
+shuttle-axum = "0.57"
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = "1"

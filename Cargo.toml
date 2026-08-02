@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/oxllm",
     "crates/oxllm-core",
+    "crates/oxllm-shuttle",
 ]
 
 [workspace.package]

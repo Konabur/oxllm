@@ -84,7 +84,7 @@ jobs:
           echo "old=$current" >> "$GITHUB_OUTPUT"
           echo "new=$new" >> "$GITHUB_OUTPUT"
 
-      - uses: actions-rust-lang/setup-rust-toolchain@8439c15d249cd2e2a5c80ad3da200c3d8553ae4
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
         if: steps.preflight.outputs.skip != 'true'
         with:
           toolchain: stable

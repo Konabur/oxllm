@@ -6,9 +6,14 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
+    #[serde(default = "default_host")]
     pub host: String,
+    #[serde(default = "default_port")]
     pub port: u16,
+    #[serde(default)]
     pub otel_endpoint: String,
+    #[serde(default)]
+    pub api_key: String,
     #[serde(default = "default_upstream_timeout")]
     pub upstream_timeout_secs: u64,
     #[serde(default = "default_bind_family")]
@@ -46,6 +51,29 @@ impl Config {
         let expanded = expand_env_vars(&content)?;
         let config: Config = toml::from_str(&expanded)?;
         Ok(config)
+    }
+
+    /// Builds a Config from the environment.
+    ///
+    /// Source precedence:
+    /// 1. `OXLLM_CONFIG_TOML` — full TOML string; `${VAR}` expansion applied
+    ///    first, then parsed (same order as `load_from_file`).
+    /// 2. `OXLLM_CONFIG` — path to a TOML file (delegates to `load_from_file`).
+    ///
+    /// On Shuttle there is no filesystem config, so relying on `OXLLM_CONFIG`
+    /// will surface a clear file-not-found error rather than booting silently.
+    pub fn from_env() -> Result<Self> {
+        if let Ok(toml_str) = std::env::var("OXLLM_CONFIG_TOML") {
+            let expanded = expand_env_vars(&toml_str)?;
+            let config: Config = toml::from_str(&expanded)?;
+            return Ok(config);
+        }
+        let path = std::env::var("OXLLM_CONFIG").map_err(|_| {
+            OxllmError::ConfigLoad(
+                "Neither OXLLM_CONFIG_TOML nor OXLLM_CONFIG is set".into(),
+            )
+        })?;
+        Self::load_from_file(&path)
     }
 
     /// Validates the configuration syntax and cross-references virtual models with defined providers.
@@ -92,6 +120,14 @@ impl Config {
 
         Ok(())
     }
+}
+
+fn default_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_port() -> u16 {
+    8080
 }
 
 fn default_upstream_timeout() -> u64 {
@@ -181,5 +217,77 @@ mod tests {
         let input = r#"api_key = "${UNCLOSED"#;
         let result = expand_env_vars(input);
         assert!(matches!(result, Err(OxllmError::ConfigLoad(_))));
+    }
+
+    #[test]
+    fn test_server_config_defaults() {
+        let toml_str = r#"
+            providers = []
+
+            [server]
+
+            [virtual_models]
+        "#;
+        // host/port/otel_endpoint/api_key/bind_family must default when absent
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.server.host, "127.0.0.1");
+        assert_eq!(cfg.server.port, 8080);
+        assert_eq!(cfg.server.otel_endpoint, "");
+        assert_eq!(cfg.server.api_key, "");
+        assert_eq!(cfg.server.upstream_timeout_secs, 5);
+        assert_eq!(cfg.server.bind_family, "ipv4");
+    }
+
+    #[test]
+    fn test_server_config_parse_api_key() {
+        let toml_str = r#"
+            providers = []
+
+            [server]
+            api_key = "sk-test-123"
+
+            [virtual_models]
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.server.api_key, "sk-test-123");
+    }
+
+    #[test]
+    fn test_from_env_toml_string() {
+        // OXLLM_CONFIG_TOML wins over OXLLM_CONFIG
+        std::env::set_var("TEST_KEY", "env-key-abc");
+        std::env::set_var(
+            "OXLLM_CONFIG_TOML",
+            r#"
+            [server]
+            api_key = "${TEST_KEY}"
+            [[providers]]
+            name = "p1"
+            enabled = true
+            base_url = "https://api.example.com/v1/"
+            api_key = "k"
+            models = ["m"]
+            [virtual_models]
+            vm = [{ provider = "p1", model = "m" }]
+            "#,
+        );
+        std::env::set_var("OXLLM_CONFIG", "/nonexistent/path.toml");
+
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.server.api_key, "env-key-abc");
+        assert_eq!(cfg.providers.len(), 1);
+        assert_eq!(cfg.virtual_models["vm"][0].provider, "p1");
+
+        std::env::remove_var("TEST_KEY");
+        std::env::remove_var("OXLLM_CONFIG_TOML");
+        std::env::remove_var("OXLLM_CONFIG");
+    }
+
+    #[test]
+    fn test_from_env_no_sources() {
+        std::env::remove_var("OXLLM_CONFIG_TOML");
+        std::env::remove_var("OXLLM_CONFIG");
+        let err = Config::from_env().unwrap_err();
+        assert!(matches!(err, OxllmError::ConfigLoad(_)));
     }
 }

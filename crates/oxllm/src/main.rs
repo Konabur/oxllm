@@ -224,6 +224,7 @@ fn build_app_state(config: Config) -> Result<AppState, String> {
         virtual_models: config.virtual_models,
         http_client,
         upstream_timeout_secs: config.server.upstream_timeout_secs,
+        api_key: config.server.api_key,
     })
 }
 
@@ -1080,6 +1081,7 @@ mod integration_tests {
             virtual_models,
             http_client,
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
 
         let (_watch_sender, watch_receiver) = tokio::sync::watch::channel(app_state.clone());
@@ -1174,6 +1176,7 @@ mod integration_tests {
             virtual_models,
             http_client,
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
 
         let (_watch_sender, watch_receiver) = tokio::sync::watch::channel(app_state.clone());
@@ -1357,6 +1360,7 @@ mod integration_tests {
             virtual_models,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -1485,6 +1489,7 @@ mod integration_tests {
             virtual_models,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -1580,6 +1585,7 @@ mod integration_tests {
             virtual_models,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -1697,6 +1703,7 @@ mod integration_tests {
             virtual_models,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -1787,6 +1794,7 @@ mod integration_tests {
             virtual_models: vm,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
         let (_ws, wr) = tokio::sync::watch::channel(state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
@@ -1868,6 +1876,7 @@ mod integration_tests {
             virtual_models: vms,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
         let (_ws, wr) = tokio::sync::watch::channel(state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
@@ -1962,6 +1971,7 @@ mod integration_tests {
             virtual_models: vms,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
         let (_ws, wr) = tokio::sync::watch::channel(state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
@@ -2056,6 +2066,7 @@ mod integration_tests {
             virtual_models: vm,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            api_key: "".to_string(),
         });
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);

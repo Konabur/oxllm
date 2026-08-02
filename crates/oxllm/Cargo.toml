@@ -33,3 +33,4 @@ subtle = "2"
 
 [dev-dependencies]
 pretty_assertions = "1"
+tower = "0.5"

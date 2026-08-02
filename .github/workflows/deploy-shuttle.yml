@@ -15,3 +15,5 @@ jobs:
           shuttle-api-key: ${{ secrets.SHUTTLE_API_KEY }}
           project-id: ${{ vars.SHUTTLE_PROJECT_ID }}
           working-directory: crates/oxllm-shuttle
+          secrets: |
+            OXLLM_CONFIG_TOML = '${{ secrets.OXLLM_CONFIG_TOML }}'

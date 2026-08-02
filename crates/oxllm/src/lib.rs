@@ -357,7 +357,6 @@ fn is_admin_path(path: &str) -> bool {
 /// - `OPTIONS` preflight requests pass without auth (browser CORS).
 pub async fn auth_or_localhost(
     State(app_state): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, Response> {
@@ -367,20 +366,28 @@ pub async fn auth_or_localhost(
         return Ok(next.run(req).await);
     }
 
-    let is_local = match addr.ip() {
-        std::net::IpAddr::V4(v4) => v4.is_loopback(),
-        std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.to_canonical().is_loopback(),
+    // `ConnectInfo` is only injected by `into_make_service_with_connect_info`
+    // (the CLI). Shuttle serves with plain `axum::serve`, so treat a missing
+    // value as a remote client and require bearer auth.
+    let client_ip = match req.extensions().get::<ConnectInfo<SocketAddr>>() {
+        Some(ConnectInfo(addr)) => {
+            let is_local = match addr.ip() {
+                std::net::IpAddr::V4(v4) => v4.is_loopback(),
+                std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.to_canonical().is_loopback(),
+            };
+            if is_local {
+                return Ok(next.run(req).await);
+            }
+            addr.ip().to_string()
+        },
+        None => "unknown".to_string(),
     };
-
-    if is_local {
-        return Ok(next.run(req).await);
-    }
 
     // No API key configured: admin routes stay localhost-only (current CLI
     // behavior preserved); /v1/* stays open.
     if expected.is_empty() {
         if is_admin_path(req.uri().path()) {
-            warn!(target: "oxllm::security", "Blocked external attempt to access administrative route from IP: {}", addr.ip());
+            warn!(target: "oxllm::security", "Blocked external attempt to access administrative route from IP: {}", client_ip);
             let body = serde_json::json!({
                 "error": {
                     "message": "Access denied: administrative routes are localhost-only",
@@ -513,6 +520,63 @@ mod auth_tests {
         let client = reqwest::Client::new();
         let res = client
             .get(format!("http://{}/status", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_shuttle_serving_without_connect_info_requires_auth_fast() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+        let state = dummy_state("secret123");
+        let app = build_router(state);
+        // Без Authorization — должен вернуть 401
+        let req = Request::builder()
+            .uri("/status")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        // С валидным Authorization — должен вернуть OK
+        let req = Request::builder()
+            .uri("/status")
+            .header("authorization", "Bearer secret123")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_shuttle_serving_without_connect_info_requires_auth() {
+        // Shuttle serves with plain `axum::serve` (no `ConnectInfo` extension).
+        // The middleware must treat a missing `ConnectInfo` as a remote client
+        // and require a valid bearer token instead of failing the request.
+        let state = dummy_state("secret123");
+        let app = build_router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+
+        // No bearer token → unauthorized.
+        let res = client
+            .get(format!("http://{}/status", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+        // Valid bearer token → allowed.
+        let res = client
+            .get(format!("http://{}/status", addr))
+            .header("Authorization", "Bearer secret123")
             .send()
             .await
             .unwrap();

@@ -13,6 +13,8 @@ pub struct ServerConfig {
     pub upstream_timeout_secs: u64,
     #[serde(default = "default_bind_family")]
     pub bind_family: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,5 +183,29 @@ mod tests {
         let input = r#"api_key = "${UNCLOSED"#;
         let result = expand_env_vars(input);
         assert!(matches!(result, Err(OxllmError::ConfigLoad(_))));
+    }
+
+    #[test]
+    fn test_server_api_key_parsing() {
+        std::env::set_var("TEST_PROXY_KEY", "secret-123");
+        let input = r#"
+            [server]
+            host = "127.0.0.1"
+            port = 8080
+            otel_endpoint = "http://127.0.0.1:4318"
+            api_key = "${TEST_PROXY_KEY}"
+
+            [[providers]]
+            name = "p1"
+            enabled = true
+            base_url = "https://api.test.com/v1/"
+            api_key = "key"
+            models = ["m1"]
+
+            [virtual_models]
+        "#;
+        let expanded = expand_env_vars(input).unwrap();
+        let config: Config = toml::from_str(&expanded).unwrap();
+        assert_eq!(config.server.api_key.as_deref(), Some("secret-123"));
     }
 }

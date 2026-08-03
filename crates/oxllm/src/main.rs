@@ -310,6 +310,63 @@ async fn health_check() -> impl IntoResponse {
     (StatusCode::OK, "OK")
 }
 
+/// Constant-time byte comparison used to validate bearer tokens without
+/// leaking timing information about how many prefix bytes match.
+fn subtle_ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Middleware enforcing `Authorization: Bearer <key>` on public `/v1/*`
+/// endpoints when a proxy-level `api_key` is configured. Admin routes are
+/// mounted outside this layer, so they remain localhost-only.
+async fn require_bearer_auth(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, Response> {
+    if let Some(ref expected_key) = state.api_key {
+        let auth_header = req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok());
+        let authorized = match auth_header {
+            Some(val) if val.starts_with("Bearer ") => {
+                let token = &val["Bearer ".len()..];
+                // Constant-time comparison
+                subtle_ct_eq(token.as_bytes(), expected_key.as_bytes())
+            },
+            _ => false,
+        };
+
+        if !authorized {
+            warn!(target: "oxllm::security", "Unauthorized access attempt to public API endpoint");
+            let body = serde_json::json!({
+                "error": {
+                    "message": "Unauthorized: invalid or missing Bearer token",
+                    "type": "invalid_request_error",
+                    "code": 401
+                }
+            });
+            let bytes = serde_json::to_vec(&body).unwrap();
+            let mut response = Response::new(Body::from(bytes));
+            *response.status_mut() = StatusCode::UNAUTHORIZED;
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            return Err(response);
+        }
+    }
+    Ok(next.run(req).await)
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -522,6 +579,10 @@ async fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error
             "/v1/chat/completions",
             post(routes::create_chat_completions),
         )
+        .layer(middleware::from_fn_with_state(
+            reloadable_state.clone(),
+            require_bearer_auth,
+        ))
         .route(
             "/status",
             get(routes::get_status).layer(middleware::from_fn(localhost_only)),
@@ -2467,5 +2528,97 @@ mod integration_tests {
             id_str
         );
         assert_eq!(id_str.len(), 22);
+    }
+
+    #[tokio::test]
+    async fn test_integration_bearer_auth() {
+        let p1 = ProviderState {
+            name: "prov1".to_string(),
+            base_url: Url::parse("http://localhost:1234/v1/").unwrap(),
+            api_key: "key1".to_string(),
+            models: vec!["model".to_string()],
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
+        };
+
+        let mut virtual_models = std::collections::HashMap::new();
+        virtual_models.insert(
+            "model".to_string(),
+            vec![VirtualModelTarget {
+                provider: "prov1".to_string(),
+                model: "model".to_string(),
+            }],
+        );
+
+        let app_state = Arc::new(AppState {
+            providers: vec![p1],
+            virtual_models,
+            http_client: reqwest::Client::builder().build().unwrap(),
+            upstream_timeout_secs: 5,
+            api_key: Some("secret-proxy-token".to_string()),
+        });
+
+        let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
+        let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
+        let state = ReloadableState {
+            app_state: wr,
+            telemetry: TelemetryClient::new(ttx),
+            start_time: Instant::now(),
+            reloader: Reloader {
+                sender: _ws,
+                config_path: PathBuf::from("."),
+            },
+        };
+
+        let router = axum::Router::new()
+            .route("/v1/models", axum::routing::get(routes::list_models))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_bearer_auth,
+            ))
+            .layer(middleware::from_fn(add_request_id))
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+
+        // 1. Request without auth -> 401
+        let res = client
+            .get(format!("http://{}/v1/models", proxy_addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 401);
+
+        // 2. Request with wrong auth -> 401
+        let res = client
+            .get(format!("http://{}/v1/models", proxy_addr))
+            .header("Authorization", "Bearer wrong-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 401);
+
+        // 3. Request with correct auth -> 200
+        let res = client
+            .get(format!("http://{}/v1/models", proxy_addr))
+            .header("Authorization", "Bearer secret-proxy-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
     }
 }
